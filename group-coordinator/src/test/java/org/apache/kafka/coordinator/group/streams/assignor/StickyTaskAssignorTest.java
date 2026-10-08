@@ -1305,6 +1305,71 @@ public class StickyTaskAssignorTest {
         assertTrue(member1TotalTasks <= 2, "Member1 should have <= 2 total tasks (quota), but has " + member1TotalTasks);
     }
 
+    @Test
+    public void testStickyTaskAssignorNotStickyForStandbyTasks() {
+        // This test reproduces KAFKA-20899: StickyTaskAssignor not sticky for standby tasks
+        // The issue was in findPrevMemberWithLeastLoad which did not cycle all members correctly as candidates:
+        // 1. It selected members.get(0) unconditionally as first candidate, even if this member might also host the active task
+        // 2. It pinned the candidateProcessState to the first "seed" candidate and never updated it
+        // 3. It compared loads of other members to the load of the "seed" member, even if the "seed" member was not a candidate
+
+        // Create a scenario where:
+        // - Process1 has active task 0 (and should NOT get standby task 0)
+        // - Process2 has no active tasks (should be able to get standby task 0)
+        // - Process3 has no active tasks (should be able to get standby task 0)
+        // The bug was that if Process1 was first in the list, it would be incorrectly selected as candidate
+        // even though it already has the active task 0
+        
+        final MemberMetadataAndStateImpl memberMetadata1 = createMemberMetadata("process1",
+            mkMap(mkEntry("test-subtopology", Sets.newSet(0))),  // Process1 has active task 0
+            Map.of());
+        final MemberMetadataAndStateImpl memberMetadata2 = createMemberMetadata("process2",
+            Map.of(),  // Process2 has no previous tasks
+            Map.of());
+        final MemberMetadataAndStateImpl memberMetadata3 = createMemberMetadata("process3",
+            Map.of(),  // Process3 has no previous tasks
+            Map.of());
+
+        final Map<String, MemberMetadataAndStateImpl> members = mkMap(
+            mkEntry("member1", memberMetadata1), 
+            mkEntry("member2", memberMetadata2), 
+            mkEntry("member3", memberMetadata3));
+
+        // Configure with 1 standby replica
+        final GroupAssignment result = assignor.assign(
+            new GroupSpecImpl(members, mkMap(mkEntry(NUM_STANDBY_REPLICAS_CONFIG, "1"))),
+            new TopologyDescriberImpl(1, true, List.of("test-subtopology"))
+        );
+
+        // Verify that standby task 0 is NOT assigned to member1 (process1) since it already has active task 0
+        final MemberAssignment member1 = result.members().get("member1");
+        assertNotNull(member1);
+        
+        // Member1 should have active task 0
+        assertTrue(member1.activeTasks().get("test-subtopology").contains(0));
+        
+        // Member1 should NOT have standby task 0 (this was the bug - it would incorrectly get assigned)
+        if (member1.standbyTasks().containsKey("test-subtopology")) {
+            assertFalse(member1.standbyTasks().get("test-subtopology").contains(0),
+                "Member1 should not have standby task 0 since it already has active task 0");
+        }
+        
+        // Verify that standby task 0 is assigned to either member2 or member3
+        boolean standbyTask0Assigned = false;
+        for (String memberId : result.members().keySet()) {
+            final MemberAssignment member = result.members().get(memberId);
+            if (member.standbyTasks().containsKey("test-subtopology") && 
+                member.standbyTasks().get("test-subtopology").contains(0)) {
+                // Make sure it's not member1
+                assertTrue(!"member1".equals(memberId), 
+                    "Standby task 0 should not be assigned to member1 which already has active task 0");
+                standbyTask0Assigned = true;
+                break;
+            }
+        }
+        assertTrue(standbyTask0Assigned, "Standby task 0 should be assigned to some member");
+    }
+
 
     private int getAllActiveTaskCount(GroupAssignment result, String... memberIds) {
         int size = 0;

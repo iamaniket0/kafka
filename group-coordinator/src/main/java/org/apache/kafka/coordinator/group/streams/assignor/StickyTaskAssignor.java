@@ -304,28 +304,31 @@ public class StickyTaskAssignor implements TaskAssignor {
             return null;
         }
 
-        Member candidate = members.get(0);
-        final ProcessState candidateProcessState = localState.processIdToState.get(candidate.processId);
-        double candidateProcessLoad = candidateProcessState.load();
-        double candidateMemberLoad = candidateProcessState.memberToTaskCounts().get(candidate.memberId);
-        for (int i = 1; i < members.size(); i++) {
-            final Member member = members.get(i);
+        Member candidate = null;
+        double candidateProcessLoad = Double.MAX_VALUE;
+        double candidateMemberLoad = Double.MAX_VALUE;
+        
+        for (final Member member : members) {
             final ProcessState processState = localState.processIdToState.get(member.processId);
             final double newProcessLoad = processState.load();
-            if (newProcessLoad < candidateProcessLoad && (taskId == null || !processState.hasTask(taskId))) {
-                final double newMemberLoad = processState.memberToTaskCounts().get(member.memberId);
-                if (newMemberLoad < candidateMemberLoad) {
-                    candidateProcessLoad = newProcessLoad;
-                    candidateMemberLoad = newMemberLoad;
-                    candidate = member;
-                }
+            final double newMemberLoad = processState.memberToTaskCounts().get(member.memberId);
+            
+            // Check if this member is a valid candidate
+            if (taskId != null && processState.hasTask(taskId)) {
+                continue; // Skip members that already have the task
+            }
+            
+            // Check if this member has lower load than current candidate
+            if (candidate == null || 
+                newProcessLoad < candidateProcessLoad || 
+                (newProcessLoad == candidateProcessLoad && newMemberLoad < candidateMemberLoad)) {
+                candidate = member;
+                candidateProcessLoad = newProcessLoad;
+                candidateMemberLoad = newMemberLoad;
             }
         }
 
-        if (taskId == null || !candidateProcessState.hasTask(taskId)) {
-            return candidate;
-        }
-        return null;
+        return candidate;
     }
 
     private static boolean hasUnfulfilledActiveTaskQuota(
