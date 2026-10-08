@@ -719,6 +719,28 @@ public class ClientTelemetryReporter implements MetricsReporter {
                 log.warn("Error constructing client telemetry payload: ", e);
                 // Update last accessed time for push request to be retried on next interval.
                 updateErrorResult(localSubscription.pushIntervalMs, time.milliseconds());
+                
+                // Restore a state from which a retry can happen. The sender should never remain in
+                // PUSH_IN_PROGRESS or TERMINATING_PUSH_IN_PROGRESS after createRequest() returns
+                // Optional.empty(), because no response or failure callback can arrive to move it on.
+                lock.writeLock().lock();
+                try {
+                    if (terminating) {
+                        // For terminating pushes, transition to TERMINATED since that's the only valid
+                        // transition from TERMINATING_PUSH_IN_PROGRESS
+                        if (!maybeSetState(ClientTelemetryState.TERMINATED)) {
+                            log.warn("Could not transition state after failed payload construction from state {}", state);
+                        }
+                    } else {
+                        // For non-terminating pushes, transition back to PUSH_NEEDED to allow retry
+                        if (!maybeSetState(ClientTelemetryState.PUSH_NEEDED)) {
+                            log.warn("Could not transition state after failed payload construction from state {}", state);
+                        }
+                    }
+                } finally {
+                    lock.writeLock().unlock();
+                }
+                
                 return Optional.empty();
             }
 

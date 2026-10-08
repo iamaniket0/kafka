@@ -1049,6 +1049,69 @@ public class ClientTelemetryReporterTest {
         assertFalse(telemetrySender.enabled());
     }
 
+    @Test
+    public void testCreateRequestPayloadConstructionFailureRestoresState() {
+        clientTelemetryReporter.configure(configs);
+        clientTelemetryReporter.contextChange(metricsContext);
+
+        ClientTelemetryReporter.DefaultClientTelemetrySender telemetrySender = (ClientTelemetryReporter.DefaultClientTelemetrySender) clientTelemetryReporter.telemetrySender();
+        
+        // Set up subscription and move to PUSH_NEEDED state
+        telemetrySender.updateSubscriptionResult(subscription, time.milliseconds());
+        assertTrue(telemetrySender.maybeSetState(ClientTelemetryState.SUBSCRIPTION_IN_PROGRESS));
+        assertTrue(telemetrySender.maybeSetState(ClientTelemetryState.PUSH_NEEDED));
+        assertEquals(ClientTelemetryState.PUSH_NEEDED, telemetrySender.state());
+
+        // Mock the KafkaMetricsCollector to throw an exception during collect()
+        KafkaMetricsCollector mockMetricsCollector = Mockito.mock(KafkaMetricsCollector.class);
+        Mockito.doThrow(new RuntimeException("Simulated payload construction failure")).when(mockMetricsCollector).collect(any());
+        clientTelemetryReporter.metricsCollector(mockMetricsCollector);
+
+        // Call createRequest() which should trigger the payload construction failure
+        Optional<AbstractRequest.Builder<?>> requestOptional = telemetrySender.createRequest();
+        
+        // The request should be empty due to the failure
+        assertFalse(requestOptional.isPresent());
+        
+        // The state should be restored to PUSH_NEEDED (not stuck in PUSH_IN_PROGRESS)
+        assertEquals(ClientTelemetryState.PUSH_NEEDED, telemetrySender.state());
+        
+        // Verify that telemetry is still enabled
+        assertTrue(telemetrySender.enabled());
+    }
+
+    @Test
+    public void testCreateRequestPayloadConstructionFailureDuringTerminationRestoresState() {
+        clientTelemetryReporter.configure(configs);
+        clientTelemetryReporter.contextChange(metricsContext);
+
+        ClientTelemetryReporter.DefaultClientTelemetrySender telemetrySender = (ClientTelemetryReporter.DefaultClientTelemetrySender) clientTelemetryReporter.telemetrySender();
+        
+        // Set up subscription and move to TERMINATING_PUSH_NEEDED state
+        telemetrySender.updateSubscriptionResult(subscription, time.milliseconds());
+        assertTrue(telemetrySender.maybeSetState(ClientTelemetryState.SUBSCRIPTION_IN_PROGRESS));
+        assertTrue(telemetrySender.maybeSetState(ClientTelemetryState.PUSH_NEEDED));
+        assertTrue(telemetrySender.maybeSetState(ClientTelemetryState.TERMINATING_PUSH_NEEDED));
+        assertEquals(ClientTelemetryState.TERMINATING_PUSH_NEEDED, telemetrySender.state());
+
+        // Mock the KafkaMetricsCollector to throw an exception during collect()
+        KafkaMetricsCollector mockMetricsCollector = Mockito.mock(KafkaMetricsCollector.class);
+        Mockito.doThrow(new RuntimeException("Simulated payload construction failure during termination")).when(mockMetricsCollector).collect(any());
+        clientTelemetryReporter.metricsCollector(mockMetricsCollector);
+
+        // Call createRequest() which should trigger the payload construction failure during termination
+        Optional<AbstractRequest.Builder<?>> requestOptional = telemetrySender.createRequest();
+        
+        // The request should be empty due to the failure
+        assertFalse(requestOptional.isPresent());
+        
+        // The state should be restored to TERMINATED (since that's the only valid transition from TERMINATING_PUSH_IN_PROGRESS)
+        assertEquals(ClientTelemetryState.TERMINATED, telemetrySender.state());
+        
+        // Verify that telemetry is still enabled (it should be, since TERMINATED is a valid end state)
+        assertTrue(telemetrySender.enabled());
+    }
+
     @AfterEach
     public void tearDown() {
         clientTelemetryReporter.close();
